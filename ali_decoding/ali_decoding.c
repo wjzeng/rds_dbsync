@@ -31,9 +31,9 @@
 #include "utils/typcache.h"
 
 #include "libpq/pqformat.h"
-#include "access/tuptoaster.h"
 #include "mb/pg_wchar.h"
 #include "utils/guc.h"
+#include "utils/float.h"
 
 
 PG_MODULE_MAGIC;
@@ -215,7 +215,7 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 
 	/* fixed fields */
 	pq_sendint64(ctx->out, txn->final_lsn);
-	pq_sendint64(ctx->out, txn->commit_time);
+	pq_sendint64(ctx->out, txn->xact_time.commit_time);
 	pq_sendint(ctx->out, txn->xid, 4);
 
 	OutputPluginWrite(ctx, true);
@@ -257,7 +257,7 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	/* Send fixed fields */
 	pq_sendint64(ctx->out, commit_lsn);
 	pq_sendint64(ctx->out, txn->end_lsn);
-	pq_sendint64(ctx->out, txn->commit_time);
+	pq_sendint64(ctx->out, txn->xact_time.commit_time);
 
 	OutputPluginWrite(ctx, true);
 	MemoryContextSwitchTo(old);
@@ -285,7 +285,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 			pq_sendbyte(ctx->out, 'I');		/* action INSERT */
 			write_rel(ctx->out, relation, data, change->action);
 			pq_sendbyte(ctx->out, 'N');		/* new tuple follows */
-			write_tuple(data, ctx->out, relation, &change->data.tp.newtuple->tuple);
+			write_tuple(data, ctx->out, relation, change->data.tp.newtuple);
 			break;
 		case REORDER_BUFFER_CHANGE_UPDATE:
 			pq_sendbyte(ctx->out, 'U');		/* action UPDATE */
@@ -294,11 +294,11 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 			{
 				pq_sendbyte(ctx->out, 'K');	/* old key follows */
 				write_tuple(data, ctx->out, relation,
-							&change->data.tp.oldtuple->tuple);
+							change->data.tp.oldtuple);
 			}
 			pq_sendbyte(ctx->out, 'N');		/* new tuple follows */
 			write_tuple(data, ctx->out, relation,
-						&change->data.tp.newtuple->tuple);
+						change->data.tp.newtuple);
 			break;
 		case REORDER_BUFFER_CHANGE_DELETE:
 			pq_sendbyte(ctx->out, 'D');		/* action DELETE */
@@ -307,7 +307,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 			{
 				pq_sendbyte(ctx->out, 'K');	/* old key follows */
 				write_tuple(data, ctx->out, relation,
-							&change->data.tp.oldtuple->tuple);
+							change->data.tp.oldtuple);
 			}
 			else
 				pq_sendbyte(ctx->out, 'E');	/* empty */
@@ -390,7 +390,7 @@ write_tuple(Ali_OutputData *data, StringInfo out, Relation rel,
 		char   	   *outputstr = NULL;
 		int			len = 0;
 
-		Form_pg_attribute att = desc->attrs[i];
+		Form_pg_attribute att = TupleDescAttr(desc, i);
 
 		if (isnull[i] || att->attisdropped)
 		{
@@ -440,7 +440,7 @@ write_colum_info(StringInfo out, Relation rel, Ali_OutputData *data, int action)
 		int		typelen;
 		char	*typname = NULL;
 
-		Form_pg_attribute att = desc->attrs[i];
+		Form_pg_attribute att = TupleDescAttr(desc, i);
 
 		if (att->attisdropped)
 		{
@@ -499,13 +499,9 @@ write_colum_info(StringInfo out, Relation rel, Ali_OutputData *data, int action)
 			char		*attname;
 				
 			if (attno < 0)
-			{
-				if (attno == ObjectIdAttributeNumber)
-					continue;
 				elog(ERROR, "system column in index");
-			}
 
-			attname = get_relid_attribute_name(RelationGetRelid(rel), attno);	
+			attname = get_attname(RelationGetRelid(rel), attno, false);	
 			latt = lappend(latt, makeString(attname));
 		}
 
